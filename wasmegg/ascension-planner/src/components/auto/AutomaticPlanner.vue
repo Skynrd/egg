@@ -70,6 +70,19 @@
                 </p>
               </div>
             </div>
+
+            <OptimizerPanel
+              :is-busy="isGenerating"
+              :is-optimizing="isOptimizing"
+              :progress="isOptimizing ? generateProgress : ''"
+              :result="optimizerResult"
+              :status="optimizerStatus"
+              :notice="optimizerNotice"
+              :start-t-e="truthEggsStore.totalTE"
+              @optimize="optimize"
+              @use-plan="useOptimizerPlan"
+              @cancel="cancelOptimize"
+            />
           </div>
         </div>
 
@@ -90,7 +103,7 @@
 
         <button
           class="btn-premium btn-primary w-full py-4 mt-8 text-sm shadow-xl shadow-indigo-500/20 active:scale-[0.98]"
-          :disabled="isGenerating"
+          :disabled="isGenerating || isOptimizing"
           @click="runGenerate()"
         >
           <span v-if="isGenerating">{{ generateProgress || 'Generating Plan...' }}</span>
@@ -103,7 +116,7 @@
             <li><span class="font-semibold">Habs are always full.</span> To keep processing fast, Auto-AP assumes full habs throughout. Results are most reliable once you're around 100 TE and time to fill habs is negligible.</li>
             <li><span class="font-semibold">Your artifacts don't improve.</span> The plan is built around whatever artifacts you have right now — it won't account for better gear you might find later.</li>
             <li><span class="font-semibold">No downtime between ascensions.</span> Each ascension is assumed to start the moment the previous one ends.</li>
-            <li><span class="font-semibold">You never sleep.</span> Auto-AP doesn't do any accounting for sleep hours.</li>
+            <li><span class="font-semibold">Build-phase shifts happen at any hour.</span> With awake hours set in the Path Optimizer, the TE-earning shifts and each ascension's end are scheduled while you're awake; the build-phase shifts are not.</li>
           </ul>
           <p class="text-amber-600 leading-relaxed">Use this as a starting point, not a final word. Your actual results may vary.</p>
 
@@ -215,14 +228,21 @@
 
     <!-- Floating Progress Indicator -->
     <div
-      v-if="isGenerating"
+      v-if="isGenerating || isOptimizing"
       class="fixed right-8 z-[200] bg-slate-900/90 text-white backdrop-blur-md border border-slate-700/50 px-6 py-4 rounded-2xl shadow-2xl shadow-indigo-500/20 flex items-center gap-4 animate-in fade-in slide-in-from-bottom-6 duration-300 transition-[bottom] duration-500"
       :class="[ascensionChain.length >= 1 && !isCollapsed ? 'bottom-32' : 'bottom-8']"
     >
       <div class="w-6 h-6 border-3 border-indigo-400/30 border-t-indigo-400 rounded-full animate-spin"></div>
       <div class="space-y-0.5 pr-2">
-        <div class="text-[10px] font-black uppercase tracking-widest text-indigo-400">Updating Roadmap</div>
+        <div class="text-[10px] font-black uppercase tracking-widest text-indigo-400">{{ isOptimizing ? 'Optimizing Path' : 'Updating Roadmap' }}</div>
         <div class="text-xs font-bold text-slate-200 font-mono-premium">{{ generateProgress || 'Calculating...' }}</div>
+        <OptimizerStatusLines
+          v-if="isOptimizing && optimizerStatus"
+          :status="optimizerStatus"
+          :start-t-e="truthEggsStore.totalTE"
+          :timezone="timezone"
+          class="pt-1 text-slate-300 font-mono-premium max-w-[min(36rem,80vw)]"
+        />
       </div>
     </div>
 
@@ -237,7 +257,9 @@
 <script setup lang="ts">
 import { ref, computed, watch, nextTick } from 'vue';
 import { storeToRefs } from 'pinia';
-import { useAutoPlannerStore, type VariantKey } from '@/stores/autoPlanner';
+import {
+  useAutoPlannerStore, DEFAULT_AWAKE_HOURS, DEFAULT_OPTIMIZER_SETTINGS, type VariantKey,
+} from '@/stores/autoPlanner';
 import { useVirtueStore } from '@/stores/virtue';
 import { useTruthEggsStore } from '@/stores/truthEggs';
 import { useAscensionGenerator } from '@/auto/useAscensionGenerator';
@@ -252,12 +274,16 @@ import SimulationErrorAlert from './SimulationErrorAlert.vue';
 import AscensionOverview from './AscensionOverview.vue';
 import ForcedAscensionPreview from './ForcedAscensionPreview.vue';
 import ValidationDialog from './ValidationDialog.vue';
+import OptimizerPanel from './OptimizerPanel.vue';
+import OptimizerStatusLines from './OptimizerStatusLines.vue';
 
 const autoPlannerStore = useAutoPlannerStore();
 const virtueStore = useVirtueStore();
 const truthEggsStore = useTruthEggsStore();
 
-const { ascensionChain, timezone, startDate, startTime, targetTE, deferForEarningsMode } = storeToRefs(autoPlannerStore);
+const {
+  ascensionChain, timezone, startDate, startTime, targetTE, deferForEarningsMode, awakeHours, optimizerSettings,
+} = storeToRefs(autoPlannerStore);
 
 // The forced-490 ascension is a silent bonus card — don't count it in the "A1 of N" denominator.
 const visibleTotal = computed(() => {
@@ -281,6 +307,10 @@ if (cachedSchedule) {
   if (cachedSchedule.startTime) startTime.value = cachedSchedule.startTime;
   if (cachedSchedule.targetTE) targetTE.value = cachedSchedule.targetTE;
   if (cachedSchedule.deferForEarningsMode && isTestingEnvironment) deferForEarningsMode.value = true;
+  if (cachedSchedule.awakeHours) awakeHours.value = { ...DEFAULT_AWAKE_HOURS, ...cachedSchedule.awakeHours };
+  if (cachedSchedule.optimizerSettings) {
+    optimizerSettings.value = { ...DEFAULT_OPTIMIZER_SETTINGS, ...cachedSchedule.optimizerSettings };
+  }
 }
 
 // Initialize timezone default
@@ -315,16 +345,19 @@ watch(
   { immediate: true }
 );
 
-// Persist the form (start date/time/timezone, target TE, defer for earnings mode) so it survives a page reload.
-watch([timezone, startDate, startTime, targetTE, deferForEarningsMode], () => {
+// Persist the form (start date/time/timezone, target TE, defer for earnings mode, awake hours,
+// optimizer settings) so it survives a page reload.
+watch([timezone, startDate, startTime, targetTE, deferForEarningsMode, awakeHours, optimizerSettings], () => {
   saveAutoPlannerSchedule({
     timezone: timezone.value,
     startDate: startDate.value,
     startTime: startTime.value,
     targetTE: targetTE.value,
     deferForEarningsMode: deferForEarningsMode.value,
+    awakeHours: awakeHours.value,
+    optimizerSettings: optimizerSettings.value,
   });
-});
+}, { deep: true });
 
 const {
   isGenerating,
@@ -346,6 +379,13 @@ const {
   saveSingleAscensionToLibrary,
   handleSetPlanVariant,
   handleSetEndTimeOverride,
+  isOptimizing,
+  optimizerStatus,
+  optimizerNotice,
+  optimizerResult,
+  optimize,
+  useOptimizerPlan,
+  cancelOptimize,
 } = useAscensionGenerator();
 
 // The main Generate/Update Plan button (and Enter in the Target TE field) always starts fresh —

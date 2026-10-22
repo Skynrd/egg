@@ -1,4 +1,4 @@
-import type { EngineState, SimulationContext } from './types';
+import type { AwakeHours, EngineState, SimulationContext } from './types';
 import { CalculationsSnapshot, VIRTUE_EGGS, VirtueEgg } from '@/types';
 import { useInitialStateStore } from '@/stores/initialState';
 import { useVirtueStore } from '@/stores/virtue';
@@ -32,7 +32,14 @@ export function getSimulationContext(): SimulationContext {
     assumeDoubleEarnings: initialStateStore.assumeDoubleEarnings,
     rawBackup: initialStateStore.rawBackup || undefined,
     deferForEarningsMode: useAutoPlannerStore().deferForEarningsMode,
+    awakeHours: getAwakeHours(),
   };
+}
+
+function getAwakeHours(): AwakeHours | null {
+  const autoPlannerStore = useAutoPlannerStore();
+  const { enabled, start, end } = autoPlannerStore.awakeHours;
+  return enabled ? { start, end, timezone: autoPlannerStore.timezone } : null;
 }
 
 /**

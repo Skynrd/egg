@@ -7,6 +7,7 @@ import { shiftCost } from 'lib';
 import { TE_BREAKPOINTS, countTEThresholdsPassed, getThresholdForTE } from '@/lib/truthEggs';
 import { computeTEEarned, timeToEarnTE } from '../te-thresholds';
 import type { VirtueEgg } from '@/types/actions/virtue';
+import { isAwake, lastAwakeTime, nextAwakeTime, type AwakeHours } from '../awakeHours';
 
 const ALL_VIRTUE_EGGS: VirtueEgg[] = ['curiosity', 'integrity', 'resilience', 'humility', 'kindness'];
 
@@ -329,4 +330,107 @@ export function runR2(state: EngineState, context: SimulationContext, targetTEFo
 
 export function runH2(state: EngineState, context: SimulationContext, targetTEForEgg: number = 0, peakELR: number = 0, maxWaitSeconds: number = Infinity): ShiftResult {
   return runTEWaitShift(state, context, 'humility', targetTEForEgg, peakELR, maxWaitSeconds);
+}
+
+/** One step of an awake-hours TE-wait schedule: stay on `egg` for exactly `waitSeconds`. */
+export interface PlannedWait {
+  egg: VirtueEgg;
+  waitSeconds: number;
+}
+
+export interface AwakeWaitPlanInput {
+  /** Wall-clock time the first wait begins. */
+  startTime: number;
+  /** Egg already active when waiting begins (K3: kindness); it is always waited on first. */
+  firstEgg: VirtueEgg | null;
+  /** Mandatory minimum wait on `firstEgg` (K3: until the build phase's final sale ends). */
+  firstMinWait: number;
+  eggsDelivered: Record<VirtueEgg, number>;
+  peakELR: number;
+  targetTE: number;
+  awake: AwakeHours;
+}
+
+function permutations<T>(items: T[]): T[][] {
+  if (items.length <= 1) return [items];
+  return items.flatMap((item, i) => permutations([...items.slice(0, i), ...items.slice(i + 1)]).map(rest => [item, ...rest]));
+}
+
+/**
+ * Schedules the TE-earning shifts so that every shift — and the ascension's end, when the next one
+ * starts — happens while the player is awake, finishing as early as possible.
+ *
+ * Tries every visiting order of the eggs after `firstEgg`. Each egg's wait starts from the same
+ * greedy share `distributeTargetTE` would give it; when that wait would end while asleep, both
+ * fixes are explored: keep earning until wake-up (overflow TE on this egg, which later eggs' shares
+ * then shrink by), or shift at bedtime with partial progress (not lost — eggs delivered are
+ * lifetime, so it carries into later ascensions). Since ELR is the same on every egg, overnight time
+ * is never wasted, only redistributed.
+ *
+ * @returns The wait steps in visiting order (eggs that need nothing are omitted, so they're never
+ *   shifted to), or null if no awake schedule reaches `targetTE`.
+ */
+export function planAwakeTEWaits(input: AwakeWaitPlanInput): PlannedWait[] | null {
+  const { startTime, firstEgg, firstMinWait, peakELR, targetTE, awake } = input;
+  if (peakELR <= 0) return null;
+
+  const totalTE = (delivered: Record<VirtueEgg, number>) =>
+    ALL_VIRTUE_EGGS.reduce((sum, egg) => sum + countTEThresholdsPassed(delivered[egg] || 0), 0);
+
+  let best: { end: number; steps: PlannedWait[] } | null = null;
+
+  const explore = (
+    order: VirtueEgg[],
+    i: number,
+    time: number,
+    delivered: Record<VirtueEgg, number>,
+    locked: VirtueEgg[],
+    steps: PlannedWait[]
+  ): void => {
+    if (best && time > best.end) return;
+    if (totalTE(delivered) >= targetTE) {
+      if (!best || time < best.end || (time === best.end && steps.length < best.steps.length)) {
+        best = { end: time, steps };
+      }
+      return;
+    }
+    if (i === order.length) return;
+
+    const egg = order[i];
+    const isFirst = i === 0 && egg === firstEgg;
+    const minWait = isFirst ? firstMinWait : 0;
+    const targets = distributeTargetTE(delivered, targetTE, locked);
+    const current = countTEThresholdsPassed(delivered[egg] || 0);
+    const natural = timeToEarnTE(delivered[egg] || 0, peakELR, targets[egg] - current);
+    const wait = Math.max(minWait, natural);
+    const nextLocked = [...locked, egg];
+
+    // Not shifting to an egg that needs nothing costs nothing and involves no shift.
+    if (wait === 0 && !isFirst) {
+      explore(order, i + 1, time, delivered, nextLocked, steps);
+      return;
+    }
+    if (!isFinite(wait)) return;
+
+    const naturalEnd = time + wait;
+    // The +1s keeps a wake-up shift from landing a float-rounding hair before the window opens once
+    // the simulation sums up every wait.
+    const ends = isAwake(naturalEnd, awake)
+      ? [naturalEnd]
+      : [nextAwakeTime(naturalEnd, awake) + 1, lastAwakeTime(naturalEnd, awake)].filter(end => end >= time + minWait);
+
+    for (const end of new Set(ends)) {
+      const waitSeconds = end - time;
+      const nextDelivered = { ...delivered, [egg]: (delivered[egg] || 0) + peakELR * waitSeconds };
+      explore(order, i + 1, end, nextDelivered, nextLocked, waitSeconds > 0 ? [...steps, { egg, waitSeconds }] : steps);
+    }
+  };
+
+  const others = ALL_VIRTUE_EGGS.filter(egg => egg !== firstEgg);
+  for (const rest of permutations(others)) {
+    const order = firstEgg ? [firstEgg, ...rest] : rest;
+    explore(order, 0, startTime, { ...input.eggsDelivered }, [], []);
+  }
+
+  return best ? (best as { steps: PlannedWait[] }).steps : null;
 }

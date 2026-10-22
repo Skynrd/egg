@@ -2,6 +2,17 @@ import type { CalculationsSnapshot, VehicleSlot, ResearchLevels, ArtifactSlotPay
 import type { Modifiers as ColleggtibleModifiers } from 'lib/collegtibles';
 
 /**
+ * The daily window (wall-clock, in `timezone`) during which the player is available to shift.
+ * `start`/`end` are "HH:MM"; an `end` earlier than `start` means the window wraps past midnight
+ * (e.g. 14:00 → 02:00). Helpers live in auto/awakeHours.ts.
+ */
+export interface AwakeHours {
+  start: string;
+  end: string;
+  timezone: string;
+}
+
+/**
  * The minimal mutable state required to compute the next state.
  * This corresponds to the "input" fields of CalculationsSnapshot.
  */
@@ -56,6 +67,9 @@ export interface SimulationContext {
   assumeDoubleEarnings: boolean;
   rawBackup?: any; // ei.IBackup
   deferForEarningsMode: boolean;
+  /** When set, the auto planner schedules TE-earning shifts (and each ascension's end) inside this
+   * daily window — see `planAwakeTEWaits` in auto/shifts/te-wait.ts. */
+  awakeHours?: AwakeHours | null;
   // TODO: Add any other global context needed (e.g. events?)
 }
 

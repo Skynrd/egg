@@ -452,3 +452,22 @@ export function formatUnixToTimeInput(timestamp: number, tz: string): string {
     hour12: false 
   }).format(d);
 }
+
+/**
+ * Format a Unix timestamp (seconds) as a date and time including the year — for multi-year plans
+ * (e.g. the Path Optimizer), where formatAbsoluteTime's year-less output would be ambiguous.
+ *
+ * @example
+ * formatDateTimeWithYear(1809734400, 'UTC') // e.g., "Sun, May 2, 2027, 10:06 AM"
+ */
+export function formatDateTimeWithYear(timestampSeconds: number, timeZone?: string): string {
+  return new Date(Math.round(timestampSeconds * 1000)).toLocaleString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZone,
+  });
+}

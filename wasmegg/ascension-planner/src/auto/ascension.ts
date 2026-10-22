@@ -1,6 +1,6 @@
 import { type Action, generateActionId } from '@/types/actions/meta';
 import { computeSnapshot } from '@/engine/compute';
-import { countTEThresholdsPassed, getThresholdForTE } from '@/lib/truthEggs';
+import { TE_BREAKPOINTS, countTEThresholdsPassed, getThresholdForTE } from '@/lib/truthEggs';
 import { timeToEarnTE } from './te-thresholds';
 import { computeShiftCosts } from './se-tracker';
 import { calculateEggsLaidDuringActions } from './engine/eggs';
@@ -14,8 +14,11 @@ import { runK2 } from './shifts/k2';
 import { runR1 } from './shifts/r1';
 import { runC3, type C3Params, type C3Variant } from './shifts/c3';
 import { runH1 } from './shifts/h1';
-import { runK3 } from './shifts/k3';
-import { runC4, runI2, runR2, runH2, runTEWaitShift, distributeTargetTE, solveTEDistributionForDeadline } from './shifts/te-wait';
+import { runK3, runK3Purchases, finishK3Wait } from './shifts/k3';
+import {
+  runC4, runI2, runR2, runH2, runTEWaitShift, distributeTargetTE, solveTEDistributionForDeadline, planAwakeTEWaits,
+} from './shifts/te-wait';
+import type { AwakeHours } from './awakeHours';
 import { countSalesThrough, isResearchSaleActive, isEarningsBoostActive } from '@/lib/events';
 import { calculateArtifactModifiers } from '@/lib/artifacts';
 import { computeRealisticELR } from '@/calculations/realisticELR';
@@ -45,7 +48,7 @@ function computeLastTEDuration(finalTE: Record<VirtueEgg, number>, peakELR: numb
  * Carries forward permanent metrics (TE, SE, shifts) and resets farm-specific progress.
  */
 export function deriveNextStartState(
-  prevSummary: AscensionSummary,
+  prevSummary: Pick<AscensionSummary, 'finalTE' | 'eggsDelivered' | 'endSoulEggs' | 'endShiftCount'>,
   baseBackupState: EngineState
 ): EngineState {
   const totalTE = Object.values(prevSummary.finalTE).reduce((a, b) => a + b, 0);
@@ -121,6 +124,15 @@ function isPurchase(action: Action): boolean {
     action.type === 'buy_silo'
   );
 }
+
+// The TE-earning shift that waits on each egg.
+const TE_WAIT_SHIFT_NAME: Record<VirtueEgg, string> = {
+  kindness: 'K3',
+  curiosity: 'C4',
+  integrity: 'I2',
+  resilience: 'R2',
+  humility: 'H2',
+};
 
 // Shifts dropped from the plan (state, time, and shift cost all discarded) when they'd buy nothing
 // — e.g. a multi-round opening can leave C2/K2 with nothing left to buy.
@@ -407,15 +419,82 @@ export function runAscension(
     );
   }
 
+  const commitShift = (name: string, result: ShiftResult, t0: number) => {
+    if (SKIP_WHEN_NO_PURCHASES.has(name) && !result.actions.some(isPurchase)) return;
+
+    tagShiftName(result.actions, name);
+
+    // Calculate eggs laid during this shift (assuming full habs)
+    const eggsLaid = calculateEggsLaidDuringActions(result.actions, currentState, context);
+    // Not gated on `actions[0].type === 'shift'`: some shifts (e.g. C1) lead with a non-shift
+    // action (equipping the earnings set), so requiring 'shift' silently dropped eggsLaid for
+    // them — the UI only looks for the field, not a specific action type, so any first action
+    // works as the attachment point.
+    if (result.actions.length > 0) {
+      Object.assign(result.actions[0].payload, { eggsLaid });
+    }
+
+    ascShiftTimings.push({ name, ms: performance.now() - t0 });
+
+    currentActions.push(...result.actions);
+    currentState = result.endState;
+    totalElapsedSeconds += result.elapsedSeconds;
+
+    if (name === 'H1') buildDurationSeconds = totalElapsedSeconds;
+  };
+
+  // Awake-hours mode (TE goals only): K3's purchases run as usual, then `planAwakeTEWaits` picks the
+  // visiting order and exact wait lengths of the TE-earning shifts so that every shift — and the
+  // ascension's end — lands while the player is awake. Returns false (leaving the regular
+  // fixed-order K3→H2 path to run) when no awake schedule exists.
+  const runAwakeScheduledWaits = (awake: AwakeHours, goalTE: number): boolean => {
+    const t0 = performance.now();
+    const purchases = runK3Purchases(currentState, context);
+    const plan = planAwakeTEWaits({
+      startTime: purchases.absTimeAfterPurchases,
+      firstEgg: 'kindness',
+      firstMinWait: Math.max(0, buildPhaseEnd - purchases.absTimeAfterPurchases),
+      eggsDelivered: purchases.endState.eggsDelivered,
+      peakELR: purchases.peakELR,
+      targetTE: goalTE,
+      awake,
+    });
+    if (!plan) return false;
+
+    const kindnessWait = plan[0]?.egg === 'kindness' ? plan[0].waitSeconds : 0;
+    commitShift('K3', finishK3Wait(purchases, context, kindnessWait), t0);
+
+    for (const step of plan) {
+      if (step.egg === 'kindness') continue;
+      currentState.lastStepTime = totalElapsedSeconds;
+      const t1 = performance.now();
+      // Asking for the per-egg cap makes `maxWaitSeconds` the binding limit: the wait lasts exactly
+      // as long as the schedule says.
+      const result = runTEWaitShift(
+        currentState, context, step.egg, TE_BREAKPOINTS.length, purchases.peakELR, step.waitSeconds
+      );
+      commitShift(TE_WAIT_SHIFT_NAME[step.egg], result, t1);
+    }
+    return true;
+  };
+  let awakeScheduled = false;
+
   for (const shift of allShifts) {
     if (skip) {
       if (shift.name === resumeData!.resumeShiftName) skip = false;
       else continue;
     }
 
+    if (awakeScheduled && Object.values(TE_WAIT_SHIFT_NAME).includes(shift.name)) continue;
+
     currentState.lastStepTime = totalElapsedSeconds;
 
     const t0 = performance.now();
+    if (shift.name === 'K3' && targetTE && context.awakeHours) {
+      awakeScheduled = runAwakeScheduledWaits(context.awakeHours, targetTE);
+      if (awakeScheduled) continue;
+    }
+
     let result: ShiftResult;
     if (shift.name === 'C3') {
       result = runC3(currentState, context, buildPhaseEnd, undefined, c3Params);
@@ -489,27 +568,7 @@ export function runAscension(
       result = shift.run(currentState, context);
     }
 
-    if (SKIP_WHEN_NO_PURCHASES.has(shift.name) && !result.actions.some(isPurchase)) continue;
-
-    tagShiftName(result.actions, shift.name);
-
-    // Calculate eggs laid during this shift (assuming full habs)
-    const eggsLaid = calculateEggsLaidDuringActions(result.actions, currentState, context);
-    // Not gated on `actions[0].type === 'shift'`: some shifts (e.g. C1) lead with a non-shift
-    // action (equipping the earnings set), so requiring 'shift' silently dropped eggsLaid for
-    // them — the UI only looks for the field, not a specific action type, so any first action
-    // works as the attachment point.
-    if (result.actions.length > 0) {
-      Object.assign(result.actions[0].payload, { eggsLaid });
-    }
-
-    ascShiftTimings.push({ name: shift.name, ms: performance.now() - t0 });
-
-    currentActions.push(...result.actions);
-    currentState = result.endState;
-    totalElapsedSeconds += result.elapsedSeconds;
-
-    if (shift.name === 'H1') buildDurationSeconds = totalElapsedSeconds;
+    commitShift(shift.name, result, t0);
   }
 
   logShiftTimings(`Ascension ${id} (${resumeData ? `resume from ${resumeData.resumeShiftName}` : 'C1 to H2'})`, ascShiftTimings);
@@ -743,9 +802,27 @@ export function runContinueCurrent(
   // regardless of visit order, so running this list in whatever order `eggsToVisit` picked can never
   // overrun the deadline itself (unlike `runAscension`'s K3, there's no extra mandatory wait baked
   // in here that could throw that off).
-  for (const egg of eggsToVisit) {
+  //
+  // Awake-hours mode (TE goals only) replaces that order and those targets with a schedule whose
+  // every shift, and the leg's end, lands while the player is awake — see `planAwakeTEWaits`.
+  const awakePlan = targetTE && context.awakeHours
+    ? planAwakeTEWaits({
+        startTime,
+        firstEgg: currentState.currentEgg as VirtueEgg,
+        firstMinWait: 0,
+        eggsDelivered: currentState.eggsDelivered,
+        peakELR: currentELR,
+        targetTE,
+        awake: context.awakeHours,
+      })
+    : null;
+  const visits = awakePlan
+    ? awakePlan.map(step => ({ egg: step.egg, target: TE_BREAKPOINTS.length, maxWait: step.waitSeconds }))
+    : eggsToVisit.map(egg => ({ egg, target: targets[egg], maxWait: Infinity }));
+
+  for (const { egg, target, maxWait } of visits) {
     currentState.lastStepTime = totalElapsedSeconds;
-    const result = runTEWaitShift(currentState, context, egg, targets[egg], currentELR);
+    const result = runTEWaitShift(currentState, context, egg, target, currentELR, maxWait);
 
     currentActions.push(...result.actions);
     currentState = result.endState;

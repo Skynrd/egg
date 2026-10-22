@@ -1,4 +1,4 @@
-import { ref, computed, nextTick } from 'vue';
+import { ref, shallowRef, computed, nextTick } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useInitialStateStore } from '@/stores/initialState';
 import { useActionsStore } from '@/stores/actions';
@@ -7,7 +7,7 @@ import { useAutoPlannerStore } from '@/stores/autoPlanner';
 import { formatNumber } from '@/lib/format';
 import { getSimulationContext, createBaseEngineState } from '@/engine/adapter';
 import { computeSnapshot } from '@/engine/compute';
-import { getLocalTimestampInTimezone } from '@/lib/events';
+import { getLocalTimestampInTimezone, getNextSaleEnd } from '@/lib/events';
 import { runUntilShift, deriveNextStartState, runContinueCurrent, runAscensionFromC3Variant } from '@/auto/ascension';
 import { runC3Variants } from '@/auto/shifts/c3';
 import { rollUpPendingTE } from '@/lib/modes';
@@ -16,7 +16,21 @@ import { triggerPlanExport, type ExportedPlan } from '@/auto/export';
 import { buildLibraryPlansFromExport } from '@/auto/buildLibraryPlans';
 import { savePlanToLibrary, type PlanData } from '@/lib/storage/db';
 import { usePersistence } from '@/composables/usePersistence';
-import type { AscensionSummary } from '@/auto/types';
+import {
+  optimizeAscensionPath, OptimizerCancelled,
+  type OptimizerGoal, type OptimizerPlan, type OptimizerResult, type OptimizerSimulator, type OptimizerStatus,
+  type StartNode,
+} from '@/auto/optimizer';
+
+/** The last optimizer result, which of its rows is currently generated, and where that generated
+ * plan actually ended (should equal the row's predicted arrival). */
+export type OptimizerRun = OptimizerResult & { appliedIndex: number; generatedEnd: number | null };
+import {
+  computeContinueLegs, computeFreshLegs, createMainThreadSimulator, TIER_13_MIN_STARTING_TE, type FreshLegDeps,
+} from '@/auto/optimizerSimulator';
+import { createWorkerPoolSimulator, resolvePoolSize, type WorkerPoolSimulator } from '@/auto/optimizerWorkerPool';
+import { computeShiftBudget } from '@/auto/se-tracker';
+import type { AscensionSummary, EngineState } from '@/auto/types';
 import type { VirtueEgg } from '@/types';
 import type { ChainedAscension, VariantKey, VariantResult } from '@/stores/autoPlanner';
 import { pickVariant } from '@/stores/autoPlanner';
@@ -30,11 +44,17 @@ const VIRTUE_EGGS_MAP: Record<number, VirtueEgg> = {
   54: 'kindness',
 };
 
-// Below this starting TE, an ascension's build phase can't realistically reach a Tier 13 unlock —
-// so `runC3Variants` is told to skip every tier13 combo outright for that ascension (see its own
-// `skipTier13Attempts` doc comment) rather than spend time simulating attempts that would almost
-// always come back impossible anyway.
-const TIER_13_MIN_STARTING_TE = 190;
+// TIER_13_MIN_STARTING_TE (imported, shared with the optimizer's simulator): below this starting TE,
+// an ascension's build phase can't realistically reach a Tier 13 unlock — so `runC3Variants` is told
+// to skip every tier13 combo outright for that ascension (see its own `skipTier13Attempts` doc
+// comment) rather than spend time simulating attempts that would almost always come back impossible.
+
+// Smaller gains are always more efficient as an extension of the previous ascension (PLAN.md §2).
+const MIN_TE_GAIN_PER_ASCENSION = 10;
+
+// Sale-aligned precision keeps this many highest-TE stops per catchable sale — more than one as a
+// hedge against what the rule ignores (Monday 2× earnings, awake hours, a faster C1–R1 at higher TE).
+const SALE_ALIGNED_STOPS_PER_SALE = 2;
 
 function pickVariantSummary(
   item: ChainedAscension,
@@ -200,6 +220,75 @@ export function useAscensionGenerator() {
     });
   });
 
+  // Shared prelude of generate() and optimize(): folds pending TE into earned TE, then seeds the
+  // initial snapshot the simulation starts from.
+  const prepareSimulation = () => {
+    rollUpPendingTE();
+
+    const context = getSimulationContext();
+    const baseState = createBaseEngineState(null);
+    const initialSnapshot = computeSnapshot(baseState, context);
+    // Pass silent:true so this snapshot update doesn't trigger the manual-mode
+    // RecalculationOverlay — the auto planner uses its own progress indicator.
+    actionsStore.setInitialSnapshot(initialSnapshot, { silent: true });
+
+    const absStartTime = getLocalTimestampInTimezone(startDate.value, startTime.value, timezone.value);
+    return { baseState, absStartTime };
+  };
+
+  /** The player's current farm as an engine state plus its real ELR, for the "continue current"
+   * first-ascension option; null when there's no farm in the backup or it isn't laying. */
+  const buildContinueStart = (
+    currentBaseState: EngineState,
+    startTimestamp: number
+  ): { state: EngineState; elr: number } | null => {
+    const farmState = initialStateStore.currentFarmState;
+    if (!farmState) return null;
+
+    const rawLoadout = initialStateStore.rawBackup
+      ? getArtifactLoadoutFromBackup(initialStateStore.rawBackup)
+      : currentBaseState.artifactLoadout;
+
+    const optimalEarnings = initialStateStore.rawBackup
+      ? getOptimalEarningsSet(initialStateStore.rawBackup)
+      : currentBaseState.artifactSets.earnings || null;
+
+    const continueState: EngineState = {
+      currentEgg: (VIRTUE_EGGS_MAP[farmState.eggType] || 'curiosity') as VirtueEgg,
+      shiftCount: currentBaseState.shiftCount,
+      te: currentBaseState.te,
+      soulEggs: currentBaseState.soulEggs,
+      vehicles: farmState.vehicles || [{ vehicleId: 0, trainLength: 1 }],
+      habIds: farmState.habs || [0, null, null, null],
+      researchLevels: { ...farmState.commonResearches },
+      siloCount: farmState.numSilos || 1,
+      tankLevel: currentBaseState.tankLevel,
+      artifactLoadout: rawLoadout.map((slot: any) => ({
+        artifactId: slot.artifactId,
+        stones: [...slot.stones],
+      })),
+      activeArtifactSet: 'elr',
+      artifactSets: {
+        earnings: optimalEarnings ? JSON.parse(JSON.stringify(optimalEarnings)) : null,
+        elr: JSON.parse(JSON.stringify(rawLoadout)),
+      },
+      fuelTankAmounts: { ...currentBaseState.fuelTankAmounts },
+      eggsDelivered: { ...currentBaseState.eggsDelivered },
+      teEarned: { ...currentBaseState.teEarned },
+      population: farmState.population || 0,
+      lastStepTime: farmState.lastStepTime || 0,
+      bankValue: farmState.cash || 0,
+      activeSales: { research: false, hab: false, vehicle: false },
+      earningsBoost: { active: false, multiplier: 1 },
+    };
+
+    const continueContext = getSimulationContext();
+    continueContext.ascensionStartTime = startTimestamp;
+    continueContext.planStartOffset = 0;
+    const elr = computeSnapshot(continueState, continueContext, { skipGrowth: true }).elr;
+    return elr > 0 ? { state: continueState, elr } : null;
+  };
+
   const generate = async (onComplete?: () => void) => {
     if (isGenerating.value) return;
     isGenerating.value = true;
@@ -250,16 +339,7 @@ export function useAscensionGenerator() {
         throw new Error('validation_error');
       }
 
-      rollUpPendingTE();
-
-      const context = getSimulationContext();
-      const baseState = createBaseEngineState(null);
-      const initialSnapshot = computeSnapshot(baseState, context);
-      // Pass silent:true so this snapshot update doesn't trigger the manual-mode
-      // RecalculationOverlay — the auto planner uses its own progress indicator.
-      actionsStore.setInitialSnapshot(initialSnapshot, { silent: true });
-
-      const absStartTime = getLocalTimestampInTimezone(startDate.value, startTime.value, timezone.value);
+      const { baseState, absStartTime } = prepareSimulation();
 
       const initialParamsToSave = {
         startDate: startDate.value,
@@ -400,54 +480,14 @@ export function useAscensionGenerator() {
             generateProgress.value = `Simulating A${i + 1} of ${loops} (Continue Current)...`;
             await new Promise(resolve => setTimeout(resolve, 15));
 
-            const farmState = initialStateStore.currentFarmState;
-            const rawLoadout = initialStateStore.rawBackup
-              ? getArtifactLoadoutFromBackup(initialStateStore.rawBackup)
-              : currentBaseState.artifactLoadout;
-
-            const optimalEarnings = initialStateStore.rawBackup
-              ? getOptimalEarningsSet(initialStateStore.rawBackup)
-              : currentBaseState.artifactSets.earnings || null;
-
-            const continueState: import('@/engine/types').EngineState = {
-              currentEgg: (VIRTUE_EGGS_MAP[farmState.eggType] || 'curiosity') as VirtueEgg,
-              shiftCount: currentBaseState.shiftCount,
-              te: currentBaseState.te,
-              soulEggs: currentBaseState.soulEggs,
-              vehicles: farmState.vehicles || [{ vehicleId: 0, trainLength: 1 }],
-              habIds: farmState.habs || [0, null, null, null],
-              researchLevels: { ...farmState.commonResearches },
-              siloCount: farmState.numSilos || 1,
-              tankLevel: currentBaseState.tankLevel,
-              artifactLoadout: rawLoadout.map((slot: any) => ({
-                artifactId: slot.artifactId,
-                stones: [...slot.stones],
-              })),
-              activeArtifactSet: 'elr',
-              artifactSets: {
-                earnings: optimalEarnings ? JSON.parse(JSON.stringify(optimalEarnings)) : null,
-                elr: JSON.parse(JSON.stringify(rawLoadout)),
-              },
-              fuelTankAmounts: { ...currentBaseState.fuelTankAmounts },
-              eggsDelivered: { ...currentBaseState.eggsDelivered },
-              teEarned: { ...currentBaseState.teEarned },
-              population: farmState.population || 0,
-              lastStepTime: farmState.lastStepTime || 0,
-              bankValue: farmState.cash || 0,
-              activeSales: { research: false, hab: false, vehicle: false },
-              earningsBoost: { active: false, multiplier: 1 },
-            };
-
-            const continueContext = getSimulationContext();
-            continueContext.ascensionStartTime = currentStartTime;
-            continueContext.planStartOffset = 0;
-            const continueSnapshot = computeSnapshot(continueState, continueContext, { skipGrowth: true });
-            const realELR = continueSnapshot.elr;
-
-            if (realELR > 0) {
+            const continueStart = buildContinueStart(currentBaseState, currentStartTime);
+            if (continueStart) {
+              const continueContext = getSimulationContext();
+              continueContext.ascensionStartTime = currentStartTime;
+              continueContext.planStartOffset = 0;
               variants.continue = runContinueCurrent(
-                continueState, continueContext, currentStartTime,
-                realELR, stepTargetTE, `asc_${i}_continue`, stepEndTime
+                continueStart.state, continueContext, currentStartTime,
+                continueStart.elr, stepTargetTE, `asc_${i}_continue`, stepEndTime
               );
             }
           }
@@ -683,7 +723,271 @@ export function useAscensionGenerator() {
     generate(onComplete);
   };
 
+  const isOptimizing = ref(false);
+  /** Last optimizer run, plus where the regenerated plan actually ended (should match `arrival`). */
+  const optimizerResult = shallowRef<OptimizerRun | null>(null);
+  /** Live view of a running search (what each worker is building, best so far); null when idle. */
+  const optimizerStatus = shallowRef<OptimizerStatus | null>(null);
+  /** Something about the last search worth telling the player (e.g. it fell back to one build at a time). */
+  const optimizerNotice = ref<string | null>(null);
+  let cancelRequested = false;
+  let workerPool: WorkerPoolSimulator | null = null;
+  const cancelOptimize = () => {
+    cancelRequested = true;
+    // Stops builds mid-flight instead of waiting for the current ones to finish.
+    workerPool?.terminate();
+  };
+
+  /** Inputs shared by optimize() and verifyOptimizerPath(): the simulator deps (with the full
+   * main-thread backup, as Generate uses), the continue-current leg if available, and the start. */
+  const prepareOptimizerInputs = () => {
+    const { baseState, absStartTime } = prepareSimulation();
+    const rootFreshState: EngineState = {
+      ...JSON.parse(JSON.stringify(baseState)),
+      currentEgg: 'curiosity',
+      population: 1,
+      bankValue: 0,
+      researchLevels: {},
+    };
+    // Same availability rule as generate(): continuing the current farm only makes sense when
+    // the plan starts (about) now.
+    const continueStart = absStartTime <= Date.now() / 1000 + 3600
+      ? buildContinueStart(rootFreshState, absStartTime)
+      : null;
+    const deps: FreshLegDeps = {
+      context: getSimulationContext(),
+      rootFreshState,
+      baseBackupState: createBaseEngineState(null),
+    };
+    return {
+      baseState,
+      absStartTime,
+      startTE: currentTE.value,
+      deps,
+      continueLeg: continueStart ? { ...continueStart, startTime: absStartTime } : null,
+    };
+  };
+
+  /**
+   * Diagnostic for "the generated plan differs from the optimizer's prediction": simulates each
+   * ascension of `targets` (e.g. [252, 275, 490]) both in an optimizer worker and on this thread
+   * (as Generate does), from the same start, and prints where they disagree. Run from the browser
+   * console as `await __verifyOptimizerPath([252, 275, 490])`.
+   */
+  const verifyOptimizerPath = async (targets: number[]) => {
+    const { startTE, absStartTime, deps, continueLeg } = prepareOptimizerInputs();
+    const pool = await createWorkerPoolSimulator(deps, continueLeg, 1);
+    const when = (t: number) => new Date(t * 1000).toLocaleString();
+    const rows: Record<string, unknown>[] = [];
+    try {
+      let node: StartNode = { te: startTE, startTime: absStartTime, prev: null };
+      for (const [i, target] of targets.entries()) {
+        const main = computeFreshLegs(deps, node, [target], true)[0];
+        const worker = (await pool.freshLegs(node, [target], true))[0];
+        const sameSets = main?.diag?.artifactSets === worker?.diag?.artifactSets;
+        rows.push({
+          leg: `A${i + 1} → ${target} (fresh)`,
+          'main end': main && when(main.endTime),
+          'worker end': worker && when(worker.endTime),
+          'main variant': main?.variantKey,
+          'worker variant': worker?.variantKey,
+          'main ELR/hr': main?.diag && main.diag.maxELR * 3600,
+          'worker ELR/hr': worker?.diag && worker.diag.maxELR * 3600,
+          'main build end': main?.diag && when(main.diag.buildPhaseEnd),
+          'worker build end': worker?.diag && when(worker.diag.buildPhaseEnd),
+          'same artifact sets': sameSets,
+        });
+        if (!sameSets) {
+          console.log(`A${i + 1} main sets:   ${main?.diag?.artifactSets}`);
+          console.log(`A${i + 1} worker sets: ${worker?.diag?.artifactSets}`);
+        }
+
+        // Carry on from the faster of fresh and (first leg only) continue, computed here.
+        let next = main;
+        if (i === 0 && continueLeg) {
+          const cont = computeContinueLegs(deps, continueLeg, [target])[0];
+          rows.push({ leg: `A1 → ${target} (continue, main only)`, 'main end': when(cont.endTime) });
+          if (!next || cont.endTime < next.endTime) next = cont;
+        }
+        if (!next) break;
+        node = { te: next.endTE, startTime: next.endTime, prev: next.end };
+      }
+    } finally {
+      pool.terminate();
+    }
+    // What Generate actually produced for the plan currently on screen, for comparison.
+    for (const [i, result] of bestResults.value.entries()) {
+      rows.push({
+        leg: `Generated A${i + 1} → ${result.summary.endTE}`,
+        'main end': when(result.summary.endTime),
+        'main variant': result.variantKey,
+        'main ELR/hr': result.summary.maxELR * 3600,
+        'main build end': when(result.summary.buildPhaseEndTime),
+      });
+    }
+    console.table(rows);
+    return rows;
+  };
+  if (typeof window !== 'undefined') {
+    (window as unknown as { __verifyOptimizerPath: typeof verifyOptimizerPath }).__verifyOptimizerPath =
+      verifyOptimizerPath;
+  }
+
+  const failValidation = (message: string): never => {
+    validationErrorMessage.value = message;
+    isValidationErrorOpen.value = true;
+    throw new Error('validation_error');
+  };
+
+  /**
+   * Searches for the fastest sequence of intermediate TE stops (or the most TE by a deadline), then
+   * writes that path into the Target TE field — pinning each ascension's chosen build variant — and
+   * regenerates the plan from it.
+   */
+  const optimize = async () => {
+    if (isGenerating.value || isOptimizing.value) return;
+    const settings = autoPlannerStore.optimizerSettings;
+    simulationError.value = null;
+    optimizerResult.value = null;
+    optimizerNotice.value = null;
+    cancelRequested = false;
+    isOptimizing.value = true;
+    generateProgress.value = 'Preparing optimizer...';
+    await new Promise(resolve => setTimeout(resolve, 30));
+
+    let result: OptimizerResult | null = null;
+    try {
+      let goal: OptimizerGoal;
+      if (settings.mode === 'te') {
+        const targets = getTargets();
+        const goalTE = targets[targets.length - 1];
+        if (!goalTE) failValidation('Enter the Target TE you want to reach, then press Optimize.');
+        if (goalTE > 490) failValidation('Target TE can be at most 490.');
+        goal = { type: 'te', targetTE: goalTE };
+      } else {
+        if (!settings.deadlineDate) failValidation('Choose a deadline date to optimize toward.');
+        goal = {
+          type: 'deadline',
+          deadline: getLocalTimestampInTimezone(settings.deadlineDate, settings.deadlineTime || '12:00', timezone.value),
+        };
+      }
+
+      const { baseState, absStartTime, startTE, deps, continueLeg } = prepareOptimizerInputs();
+      if (goal.type === 'te' && goal.targetTE <= startTE) {
+        failValidation(`Target TE (${goal.targetTE}) must be greater than your current TE (${startTE}).`);
+      }
+      if (goal.type === 'deadline' && goal.deadline <= absStartTime) {
+        failValidation('The deadline must be after the start time.');
+      }
+
+      const budget = computeShiftBudget(
+        baseState.shiftCount, baseState.soulEggs, settings.maxLifetimeShifts, settings.minSoulEggs
+      );
+      if (budget.error) failValidation(budget.error);
+
+      // Build phases run in parallel on Web Workers; if they can't start, fall back to this thread.
+      let sim: OptimizerSimulator;
+      const workerCount = resolvePoolSize(settings.workerCount);
+      try {
+        generateProgress.value = 'Starting optimizer workers...';
+        workerPool = await createWorkerPoolSimulator(deps, continueLeg, workerCount);
+        sim = workerPool;
+        console.log(`[optimizer] started with ${sim.concurrency} of ${workerCount} workers ready; the rest join as they load`);
+      } catch (err) {
+        console.warn('[optimizer] workers unavailable, running on the main thread:', err);
+        const reason = err instanceof Error ? err.message : String(err);
+        optimizerNotice.value = `Workers couldn't start (${reason}), so this search runs one build at a time.`;
+        sim = createMainThreadSimulator(deps, continueLeg);
+      }
+
+      result = await optimizeAscensionPath(sim, {
+        startTE,
+        startTime: absStartTime,
+        goal,
+        shiftBudget: budget.budget,
+        minGain: MIN_TE_GAIN_PER_ASCENSION,
+        step: settings.precision === 'sale' ? 1 : settings.precision,
+        saleAlignedStops: settings.precision === 'sale'
+          ? { nextSaleEnd: getNextSaleEnd, keepPerSale: SALE_ALIGNED_STOPS_PER_SALE }
+          : undefined,
+        maxStopTE: settings.maxStopTE ?? undefined,
+        onProgress: message => {
+          generateProgress.value = message;
+        },
+        onStatus: status => {
+          optimizerStatus.value = status;
+        },
+        shouldCancel: () => cancelRequested,
+      });
+
+      if (!result) {
+        throw new Error(
+          goal.type === 'te'
+            ? `No plan reaches ${goal.targetTE} TE within your shift budget (${budget.budget} shifts).`
+            : 'No plan gains any TE by that deadline within your shift budget.'
+        );
+      }
+
+      console.log(
+        `[optimizer] ${result.legs.map(l => `${l.targetTE} (${l.variantKey})`).join(' → ')} · ` +
+          `${result.buildCount} builds, ${result.expansions} expansions, ${(result.elapsedMs / 1000).toFixed(1)}s`
+      );
+
+    } catch (err: any) {
+      if (err instanceof OptimizerCancelled || cancelRequested) {
+        simulationError.value = null;
+      } else if (err.message !== 'validation_error') {
+        console.error('Optimizer error:', err);
+        simulationError.value = err.message || 'An unknown error occurred while optimizing.';
+      }
+      result = null;
+    } finally {
+      workerPool?.terminate();
+      workerPool = null;
+      optimizerStatus.value = null;
+      isOptimizing.value = false;
+      generateProgress.value = '';
+    }
+
+    if (!result) return;
+    // The best plan is always the last row of the per-ascension-count list.
+    const appliedIndex = result.byAscensions.length - 1;
+    optimizerResult.value = { ...result, appliedIndex, generatedEnd: await applyOptimizerPlan(result) };
+  };
+
+  /**
+   * Writes a plan's stops into the Target TE field — pinning each ascension's build variant to the
+   * one the optimizer simulated — regenerates the plan, and returns where the generated plan ends
+   * (which should equal the plan's predicted arrival).
+   */
+  const applyOptimizerPlan = async (plan: OptimizerPlan): Promise<number | null> => {
+    targetTE.value = plan.legs.map(l => l.targetTE).join(' ');
+    ascensionChain.value = [];
+    autoPlannerStore.endTimeOverrides = {};
+    autoPlannerStore.planVariantOverrides = Object.fromEntries(plan.legs.map((leg, i) => [i, leg.variantKey]));
+    await generate();
+    const generated = ascensionChain.value.filter(item => !item.forcedTarget490);
+    const last = generated[generated.length - 1];
+    return last ? pickVariantSummary(last, autoPlannerStore.planVariantOverrides, {}).endTime : null;
+  };
+
+  /** "Use this path" on a row of the last optimizer result's per-ascension-count list. */
+  const useOptimizerPlan = async (index: number) => {
+    const current = optimizerResult.value;
+    const plan = current?.byAscensions[index];
+    if (!current || !plan || isGenerating.value || isOptimizing.value) return;
+    const generatedEnd = await applyOptimizerPlan(plan);
+    optimizerResult.value = { ...current, appliedIndex: index, generatedEnd };
+  };
+
   return {
+    isOptimizing,
+    optimizerStatus,
+    optimizerNotice,
+    optimizerResult,
+    optimize,
+    useOptimizerPlan,
+    cancelOptimize,
     isGenerating,
     isExporting,
     isSavingToLibrary,

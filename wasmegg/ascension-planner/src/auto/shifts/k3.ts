@@ -32,18 +32,52 @@ export function runK3(
   targetTEForEgg?: number,
   maxWaitSeconds: number = Infinity
 ): ShiftResult {
+  const purchases = runK3Purchases(startState, context);
+  const { endState: currentState, peakELR } = purchases;
+
+  // 4. Wait
+  let waitDuration = Math.max(0, buildPhaseEnd - purchases.absTimeAfterPurchases);
+
+  if (targetTEForEgg !== undefined) {
+    const currentEggsDelivered = currentState.eggsDelivered['kindness'] || 0;
+    const currentTE = countTEThresholdsPassed(currentEggsDelivered);
+    const neededTE = Math.max(0, targetTEForEgg - currentTE);
+
+    if (neededTE > 0) {
+      const teWaitTime = timeToEarnTE(currentEggsDelivered, peakELR, neededTE);
+      // We wait until buildPhaseEnd (end of sale) but extend it if more TE is needed.
+      waitDuration = Math.max(waitDuration, teWaitTime);
+    }
+  }
+
+  // See this function's doc comment: callers passing a finite `maxWaitSeconds` are expected to have
+  // already guaranteed `buildPhaseEnd` fits inside it, so this clamp only ever trims the
+  // TE-target-driven extension above, never the mandatory build-phase wait itself.
+  waitDuration = Math.min(waitDuration, maxWaitSeconds);
+
+  return finishK3Wait(purchases, context, waitDuration);
+}
+
+export interface K3Purchases extends ShiftResult {
+  peakELR: number;
+  /** Wall-clock time once the purchases are done, i.e. when K3's wait begins. */
+  absTimeAfterPurchases: number;
+}
+
+/**
+ * K3 steps 1–3: shift to Kindness, buy the remaining vehicles/trains, and compute peak ELR. Split
+ * from the wait (`finishK3Wait`) so awake-hours scheduling can plan the wait from this exact state.
+ */
+export function runK3Purchases(startState: EngineState, context: SimulationContext): K3Purchases {
   // 1. Shift to Kindness
   const shifted = applyShiftAction(startState, context, 'kindness');
 
   // 2. Buy any remaining vehicles/trains (unbounded, same as this shift's previous behavior)
   const vehiclePlan = runMaxVehiclesPlan(shifted.state, context, Infinity);
 
-  let currentState = vehiclePlan.endState;
-  let elapsedSeconds = vehiclePlan.elapsedSeconds;
+  const currentState = vehiclePlan.endState;
+  const elapsedSeconds = vehiclePlan.elapsedSeconds;
   const actions = [shifted.action, ...vehiclePlan.actions];
-
-  const getAbsTime = () =>
-    context.ascensionStartTime + ((startState.lastStepTime || 0) - context.planStartOffset) + elapsedSeconds;
 
   // 3. Compute peak ELR
   const artMods = calculateArtifactModifiers(currentState.artifactLoadout);
@@ -62,26 +96,18 @@ export function runK3(
     actions[0].payload.peakELR = peakELR;
   }
 
-  // 4. Wait
-  const absTimeAfterPurchases = getAbsTime();
-  let waitDuration = Math.max(0, buildPhaseEnd - absTimeAfterPurchases);
+  const absTimeAfterPurchases =
+    context.ascensionStartTime + ((startState.lastStepTime || 0) - context.planStartOffset) + elapsedSeconds;
 
-  if (targetTEForEgg !== undefined) {
-    const currentEggsDelivered = currentState.eggsDelivered['kindness'] || 0;
-    const currentTE = countTEThresholdsPassed(currentEggsDelivered);
-    const neededTE = Math.max(0, targetTEForEgg - currentTE);
+  return { actions, elapsedSeconds, endState: currentState, peakELR, absTimeAfterPurchases };
+}
 
-    if (neededTE > 0) {
-      const teWaitTime = timeToEarnTE(currentEggsDelivered, peakELR, neededTE);
-      // We wait until buildPhaseEnd (end of sale) but extend it if more TE is needed.
-      waitDuration = Math.max(waitDuration, teWaitTime);
-    }
-  }
-
-  // See this function's doc comment: callers passing a finite `maxWaitSeconds` are expected to have
-  // already guaranteed `buildPhaseEnd` fits inside it, so this clamp only ever trims the
-  // TE-target-driven extension above, never the mandatory build-phase wait itself.
-  waitDuration = Math.min(waitDuration, maxWaitSeconds);
+/** K3 step 4: wait exactly `waitDuration` seconds on Kindness after `runK3Purchases`. */
+export function finishK3Wait(purchases: K3Purchases, context: SimulationContext, waitDuration: number): ShiftResult {
+  let currentState = purchases.endState;
+  let elapsedSeconds = purchases.elapsedSeconds;
+  const actions = [...purchases.actions];
+  const peakELR = purchases.peakELR;
 
   if (waitDuration > 0) {
     const currentEggsDelivered = currentState.eggsDelivered['kindness'] || 0;

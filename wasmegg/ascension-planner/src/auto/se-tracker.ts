@@ -1,4 +1,4 @@
-import { shiftCost } from 'lib';
+import { shiftCost, parseValueWithUnit } from 'lib';
 
 /**
  * Computes SE costs for a sequence of shifts.
@@ -61,4 +61,66 @@ export function computeMultiAscensionSECost(
     endingShiftCount: currentShiftCount,
     perAscension,
   };
+}
+
+/**
+ * How many more shifts can be taken before the SE balance would drop below `minSoulEggs`. Shift
+ * cost depends only on the current SE balance and lifetime shift count, so this is fully
+ * determined by the starting point — which is what lets the optimizer treat "min SE to keep" as
+ * just another shift budget.
+ */
+export function maxShiftsKeepingSE(
+  startingSE: number,
+  startingShiftCount: number,
+  minSoulEggs: number,
+  cap = 2000
+): number {
+  let currentSE = startingSE;
+  let shifts = 0;
+  while (shifts < cap) {
+    const cost = shiftCost(currentSE, startingShiftCount + shifts);
+    if (currentSE - cost < minSoulEggs) break;
+    currentSE -= cost;
+    shifts++;
+  }
+  return shifts;
+}
+
+/** Parses an SE amount in EI notation ("5N", "1.2s") or plain/scientific notation ("1e40"). */
+export function parseSoulEggs(input: string): number | null {
+  const s = input.trim();
+  if (s === '') return null;
+  const plain = Number(s);
+  if (!isNaN(plain)) return plain;
+  return parseValueWithUnit(s, false);
+}
+
+export interface ShiftBudget {
+  /** Shifts the plan may spend in total (Infinity when unconstrained). */
+  budget: number;
+  byLifetimeCap: number | null;
+  bySoulEggs: number | null;
+  error?: string;
+}
+
+/** Folds "max lifetime shifts" and "min SE to keep" into the single shift budget the optimizer uses. */
+export function computeShiftBudget(
+  currentShiftCount: number,
+  soulEggs: number,
+  maxLifetimeShifts: number | null,
+  minSoulEggsInput: string
+): ShiftBudget {
+  const byLifetimeCap = maxLifetimeShifts !== null ? Math.max(0, maxLifetimeShifts - currentShiftCount) : null;
+
+  let bySoulEggs: number | null = null;
+  if (minSoulEggsInput.trim() !== '') {
+    const minSoulEggs = parseSoulEggs(minSoulEggsInput);
+    if (minSoulEggs === null) {
+      return { budget: 0, byLifetimeCap, bySoulEggs, error: `Couldn't read "${minSoulEggsInput}" as an SE amount.` };
+    }
+    bySoulEggs = maxShiftsKeepingSE(soulEggs, currentShiftCount, minSoulEggs);
+  }
+
+  const budget = Math.min(byLifetimeCap ?? Infinity, bySoulEggs ?? Infinity);
+  return { budget, byLifetimeCap, bySoulEggs };
 }

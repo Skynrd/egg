@@ -7,6 +7,7 @@
  */
 
 import type { VirtueEgg } from '@/types';
+import type { AwakeHoursSetting, OptimizerSettings } from '@/stores/autoPlanner';
 
 const SCHEDULE_STORAGE_KEY = 'auto_planner_schedule_v1';
 const TE_INPUTS_STORAGE_KEY_PREFIX = 'auto_planner_te_inputs_v1';
@@ -17,6 +18,8 @@ export interface AutoPlannerScheduleCache {
   startTime: string;
   targetTE: string;
   deferForEarningsMode?: boolean;
+  awakeHours?: AwakeHoursSetting;
+  optimizerSettings?: OptimizerSettings;
 }
 
 export function loadAutoPlannerSchedule(): Partial<AutoPlannerScheduleCache> | null {

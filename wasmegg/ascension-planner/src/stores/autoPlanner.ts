@@ -60,6 +60,43 @@ export function pickVariant(
   return candidates.reduce((a, b) => (a.summary.totalDurationSeconds <= b.summary.totalDurationSeconds ? a : b));
 }
 
+/** Daily window when the player can start a new ascension; applied by both Generate and Optimize. */
+export interface AwakeHoursSetting {
+  enabled: boolean;
+  start: string;
+  end: string;
+}
+
+export interface OptimizerSettings {
+  /** 'te': earliest path to the Target TE. 'deadline': most TE reachable by the deadline. */
+  mode: 'te' | 'deadline';
+  /** Lifetime shift count the plan may not exceed; null = no cap. */
+  maxLifetimeShifts: number | null;
+  /** SE balance (EI notation, e.g. "5N") the plan must keep; '' = no floor. */
+  minSoulEggs: string;
+  /** Intermediate stops are searched every `precision` TE, then refined around the winner; 'sale'
+   * continues only from the highest-TE stops per sale the next build can catch. */
+  precision: 1 | 2 | 5 | 'sale';
+  /** Highest TE an intermediate stop may be at; null = no cap. The final ascension is never capped. */
+  maxStopTE: number | null;
+  /** Web Workers simulating builds in parallel; null = half the device's cores. */
+  workerCount: number | null;
+  deadlineDate: string;
+  deadlineTime: string;
+}
+
+export const DEFAULT_AWAKE_HOURS: AwakeHoursSetting = { enabled: false, start: '08:00', end: '23:00' };
+export const DEFAULT_OPTIMIZER_SETTINGS: OptimizerSettings = {
+  mode: 'te',
+  maxLifetimeShifts: null,
+  minSoulEggs: '',
+  precision: 'sale',
+  maxStopTE: 320,
+  workerCount: null,
+  deadlineDate: '',
+  deadlineTime: '12:00',
+};
+
 export const useAutoPlannerStore = defineStore('autoPlanner', () => {
   const ascensionChain = ref<ChainedAscension[]>([]);
   const timezone = ref(Intl.DateTimeFormat().resolvedOptions().timeZone);
@@ -84,6 +121,9 @@ export const useAutoPlannerStore = defineStore('autoPlanner', () => {
    */
   const endTimeOverrides = ref<Record<number, number>>({});
   const deferForEarningsMode = ref(false);
+  // Preferences, not plan data: deliberately left alone by setPlan() and clear().
+  const awakeHours = ref<AwakeHoursSetting>({ ...DEFAULT_AWAKE_HOURS });
+  const optimizerSettings = ref<OptimizerSettings>({ ...DEFAULT_OPTIMIZER_SETTINGS });
 
   function setPlan(data: {
     ascensionChain: ChainedAscension[];
@@ -139,6 +179,8 @@ export const useAutoPlannerStore = defineStore('autoPlanner', () => {
     planVariantOverrides,
     endTimeOverrides,
     deferForEarningsMode,
+    awakeHours,
+    optimizerSettings,
     setPlan,
     clear,
   };
