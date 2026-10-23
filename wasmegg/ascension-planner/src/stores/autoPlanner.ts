@@ -91,7 +91,7 @@ export const DEFAULT_OPTIMIZER_SETTINGS: OptimizerSettings = {
   maxLifetimeShifts: null,
   minSoulEggs: '',
   precision: 'sale',
-  maxStopTE: 320,
+  maxStopTE: 340,
   workerCount: null,
   deadlineDate: '',
   deadlineTime: '12:00',
