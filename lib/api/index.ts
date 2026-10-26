@@ -11,7 +11,9 @@ export * from './encode';
 export * from './utils';
 export * from './version';
 
-const API_ROOT = 'https://egg-forwarder.carpet.workers.dev/?url=https://www.auxbrain.com';
+// VITE_API_ROOT overrides the forwarder for self-hosted builds (the default only accepts carpet's domains).
+const API_ROOT =
+  import.meta.env.VITE_API_ROOT || 'https://egg-forwarder.carpet.workers.dev/?url=https://www.auxbrain.com';
 const AUTH_API_ROOT = 'https://egg-auth-worker.carpet.workers.dev';
 
 // Endpoints that must be routed through the authenticated API worker.

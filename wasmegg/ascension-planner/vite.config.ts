@@ -4,7 +4,8 @@ import vueJsx from '@vitejs/plugin-vue-jsx';
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  base: '/ascension-planner/',
+  // VITE_BASE lets a self-hosted build live under another path (see scripts/build-bldevs.sh).
+  base: process.env.VITE_BASE || '/ascension-planner/',
   resolve: {
     tsconfigPaths: true,
   },
