@@ -1,5 +1,5 @@
 <template>
-  <the-nav-bar active-entry-id="ascension-planner">
+  <the-nav-bar active-entry-id="ascension-planner" :use-absolute-urls="useAbsoluteNavUrls">
     <button
       type="button"
       class="block ml-auto text-gray-300 hover:text-white focus:outline-none focus:ring-1 focus:ring-inset focus:ring-gray-300"
@@ -580,6 +580,8 @@ import {
 
 // Dev server only (localhost or a LAN IP hitting the Vite dev server) - never in a production build.
 const isDev = import.meta.env.DEV;
+// The dev server and self-hosted builds (VITE_BASE != default) don't sit next to the rest of wasmegg, so nav links must be absolute.
+const useAbsoluteNavUrls = isDev || import.meta.env.BASE_URL !== '/ascension-planner/';
 
 const playerId = ref(new URLSearchParams(window.location.search).get('playerId') || getSavedPlayerID() || '');
 const initialStateStore = useInitialStateStore();

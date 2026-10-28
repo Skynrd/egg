@@ -1,38 +1,8 @@
 <template>
   <div>
-    <!-- Collapsed by default: just the entry point and what it does. -->
-    <div v-if="!expanded" class="space-y-1.5">
-      <button
-        type="button"
-        class="flex items-center gap-2 px-4 py-2 rounded-xl bg-white border border-indigo-200 text-indigo-700 text-[10px] font-black uppercase tracking-widest hover:bg-indigo-600 hover:text-white transition-colors"
-        :aria-expanded="false"
-        @click="expanded = true"
-      >
-        Path Optimizer
-        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-      <p class="text-[10px] font-bold text-slate-400 leading-relaxed px-1">
-        Finds the fastest sequence of ascension stops to the last number in Target TE(s), then replaces the
-        field with that path and generates it.
-      </p>
-    </div>
-
-    <div v-else class="rounded-2xl border border-indigo-100 bg-indigo-50/40 p-4 sm:p-5 space-y-5">
+    <div class="rounded-2xl border border-indigo-100 bg-indigo-50/40 p-4 sm:p-5 space-y-5">
       <div class="flex items-center justify-between gap-3">
-        <button
-          type="button"
-          class="flex items-center gap-2 text-xs font-black text-slate-700 uppercase tracking-wider hover:text-indigo-600 transition-colors"
-          :aria-expanded="true"
-          title="Collapse"
-          @click="expanded = false"
-        >
-          Path Optimizer
-          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 15l7-7 7 7" />
-          </svg>
-        </button>
+        <h3 class="text-xs font-black text-slate-700 uppercase tracking-wider">Path Optimizer</h3>
         <div class="flex rounded-xl bg-white border border-slate-200 p-0.5">
           <button
             v-for="option in modeOptions"
@@ -62,79 +32,121 @@
         </p>
       </div>
 
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div class="space-y-1.5">
-          <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest px-1">Max lifetime shifts</label>
-          <input v-model="maxShiftsInput" type="number" min="0" step="1" placeholder="No cap" :class="inputClass" class="w-full" />
-          <p class="text-[10px] font-bold text-slate-400 px-1">Now: {{ currentShiftCount }}</p>
-        </div>
-        <div class="space-y-1.5">
-          <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest px-1">Min SE to keep</label>
-          <input v-model="settings.minSoulEggs" type="text" placeholder="No floor, e.g. 5N" :class="inputClass" class="w-full" />
-          <p class="text-[10px] font-bold px-1" :class="budget.error ? 'text-red-500' : 'text-slate-400'">
-            {{ budget.error ?? `Now: ${formatNumber(soulEggs)}` }}
-          </p>
-        </div>
+      <div class="flex justify-end">
+        <button
+          type="button"
+          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 text-[9px] font-black uppercase tracking-widest hover:text-indigo-600 hover:border-indigo-200 transition-colors"
+          @click="showAdvanced = true"
+        >
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+          </svg>
+          Advanced Options
+        </button>
       </div>
 
-      <p class="text-[10px] font-bold text-slate-500 px-1">
-        Shift budget:
-        <span class="text-slate-800">{{ budgetLabel }}</span>
+      <!-- Settings most players can leave at their defaults live in a modal so the panel stays simple. -->
+      <Teleport to="body">
+        <div v-if="showAdvanced" class="fixed inset-0 z-[2000] flex items-center justify-center p-4">
+          <div class="absolute inset-0 bg-slate-900/60 backdrop-blur-sm transition-all" @click="showAdvanced = false" />
+          <div
+            class="relative w-full max-w-2xl max-h-[88vh] flex flex-col overflow-hidden shadow-2xl rounded-2xl border border-white/50 bg-white/95 transition-all duration-300 animate-in fade-in zoom-in-95"
+          >
+            <div class="bg-gradient-to-r from-slate-50 to-white px-6 py-4 border-b border-slate-100">
+              <h3 class="text-xs font-black text-slate-800 uppercase tracking-widest">Advanced Options</h3>
+              <p class="text-[10px] font-bold text-slate-400 mt-1">The defaults work well for most players.</p>
+            </div>
+            <div class="px-6 py-5 space-y-5 overflow-y-auto">
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div class="space-y-1.5">
+                  <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest px-1">Max lifetime shifts</label>
+                  <input v-model="maxShiftsInput" type="number" min="0" step="1" placeholder="No cap" :class="inputClass" class="w-full" />
+                  <p class="text-[10px] font-bold text-slate-400 px-1">Now: {{ currentShiftCount }}</p>
+                </div>
+                <div class="space-y-1.5">
+                  <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest px-1">Min SE to keep</label>
+                  <input v-model="settings.minSoulEggs" type="text" placeholder="No floor, e.g. 5N" :class="inputClass" class="w-full" />
+                  <p class="text-[10px] font-bold px-1" :class="budget.error ? 'text-red-500' : 'text-slate-400'">
+                    {{ budget.error ?? `Now: ${formatNumber(soulEggs)}` }}
+                  </p>
+                </div>
+              </div>
+
+              <p class="text-[10px] font-bold text-slate-500 px-1">
+                Shift budget:
+                <span class="text-slate-800">{{ budgetLabel }}</span>
+              </p>
+
+              <div class="space-y-2">
+                <label class="flex items-center gap-2 text-[10px] font-black text-slate-600 uppercase tracking-widest px-1 cursor-pointer">
+                  <input v-model="awakeHours.enabled" type="checkbox" class="rounded text-indigo-600" />
+                  Only shift while I'm awake
+                </label>
+                <div v-if="awakeHours.enabled" class="flex items-center gap-3 px-1">
+                  <input v-model="awakeHours.start" type="time" :class="inputClass" class="w-32" />
+                  <span class="text-[10px] font-black text-slate-400 uppercase">to</span>
+                  <input v-model="awakeHours.end" type="time" :class="inputClass" class="w-32" />
+                </div>
+                <p class="text-[10px] font-bold text-slate-400 leading-relaxed px-1">
+                  The TE-earning shifts (K3, C4, I2, R2, H2) are reordered and timed so that each one, and the end of
+                  every ascension, happens while you're awake. This applies to Generate too. Build-phase shifts (C1
+                  through H1) aren't adjusted yet.
+                </p>
+              </div>
+
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div class="space-y-1.5">
+                  <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest px-1">Search precision</label>
+                  <select v-model.number="settings.precision" :class="inputClass" class="w-full">
+                    <option value="sale">Sale-aligned stops (recommended, fastest)</option>
+                    <option :value="1">Every TE (exhaustive, slowest; for double-checking)</option>
+                    <option :value="2">Every 2 TE, then refine</option>
+                    <option :value="5">Every 5 TE, then refine</option>
+                  </select>
+                </div>
+                <div class="space-y-1.5">
+                  <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest px-1">Highest intermediate stop</label>
+                  <input v-model="maxStopInput" type="number" min="0" step="1" placeholder="No cap" :class="inputClass" class="w-full" />
+                  <p class="text-[10px] font-bold text-slate-400 px-1">
+                    Once research is maxed, another ascension only adds a rebuild. The final ascension can still go higher.
+                  </p>
+                </div>
+              </div>
+
+              <div class="space-y-1.5">
+                <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest px-1">Parallel workers</label>
+                <input
+                  v-model="workerCountInput"
+                  type="number"
+                  min="1"
+                  :max="cores"
+                  step="1"
+                  :placeholder="`Auto (${defaultWorkers})`"
+                  :class="inputClass"
+                  class="w-full sm:w-48"
+                />
+                <p class="text-[10px] font-bold text-slate-400 px-1">
+                  This device reports {{ cores }} cores. More workers search faster, up to a point, but each one uses
+                  memory.
+                </p>
+              </div>
+            </div>
+            <div class="px-6 py-4 bg-slate-50 border-t border-slate-100 flex justify-end">
+              <button
+                class="px-6 py-2 text-[10px] font-black uppercase tracking-widest bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 hover:text-slate-900 transition-all rounded-xl hover:shadow-sm"
+                @click="showAdvanced = false"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      </Teleport>
+
+      <!-- The bad input is hidden in Advanced Options, so say why Optimize is disabled. -->
+      <p v-if="budget.error" class="text-[10px] font-bold text-red-500 px-1">
+        Advanced Options: {{ budget.error }}
       </p>
-
-      <div class="space-y-2">
-        <label class="flex items-center gap-2 text-[10px] font-black text-slate-600 uppercase tracking-widest px-1 cursor-pointer">
-          <input v-model="awakeHours.enabled" type="checkbox" class="rounded text-indigo-600" />
-          Only shift while I'm awake
-        </label>
-        <div v-if="awakeHours.enabled" class="flex items-center gap-3 px-1">
-          <input v-model="awakeHours.start" type="time" :class="inputClass" class="w-32" />
-          <span class="text-[10px] font-black text-slate-400 uppercase">to</span>
-          <input v-model="awakeHours.end" type="time" :class="inputClass" class="w-32" />
-        </div>
-        <p class="text-[10px] font-bold text-slate-400 leading-relaxed px-1">
-          The TE-earning shifts (K3, C4, I2, R2, H2) are reordered and timed so that each one, and the end of
-          every ascension, happens while you're awake. This applies to Generate too. Build-phase shifts (C1
-          through H1) aren't adjusted yet.
-        </p>
-      </div>
-
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div class="space-y-1.5">
-          <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest px-1">Search precision</label>
-          <select v-model.number="settings.precision" :class="inputClass" class="w-full">
-            <option value="sale">Sale-aligned stops (recommended, fastest)</option>
-            <option :value="1">Every TE (exhaustive, slowest; for double-checking)</option>
-            <option :value="2">Every 2 TE, then refine</option>
-            <option :value="5">Every 5 TE, then refine</option>
-          </select>
-        </div>
-        <div class="space-y-1.5">
-          <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest px-1">Highest intermediate stop</label>
-          <input v-model="maxStopInput" type="number" min="0" step="1" placeholder="No cap" :class="inputClass" class="w-full" />
-          <p class="text-[10px] font-bold text-slate-400 px-1">
-            Once research is maxed, another ascension only adds a rebuild. The final ascension can still go higher.
-          </p>
-        </div>
-      </div>
-
-      <div class="space-y-1.5">
-        <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest px-1">Parallel workers</label>
-        <input
-          v-model="workerCountInput"
-          type="number"
-          min="1"
-          :max="cores"
-          step="1"
-          :placeholder="`Auto (${defaultWorkers})`"
-          :class="inputClass"
-          class="w-full sm:w-48"
-        />
-        <p class="text-[10px] font-bold text-slate-400 px-1">
-          This device reports {{ cores }} cores. More workers search faster, up to a point, but each one uses
-          memory.
-        </p>
-      </div>
 
       <button
         v-if="!isOptimizing"
@@ -221,7 +233,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, ref } from 'vue';
 import { storeToRefs } from 'pinia';
 import { useAutoPlannerStore } from '@/stores/autoPlanner';
 import { useVirtueStore } from '@/stores/virtue';
@@ -253,25 +265,7 @@ const { optimizerSettings: settings, awakeHours, timezone } = storeToRefs(useAut
 const virtueStore = useVirtueStore();
 const initialStateStore = useInitialStateStore();
 
-// Collapsed until the player opens it, then remembered across visits; a search keeps running (and
-// reporting in the floating progress box) either way.
-const EXPANDED_STORAGE_KEY = 'auto_planner_optimizer_expanded_v1';
-const expanded = ref(readExpanded());
-watch(expanded, value => {
-  try {
-    localStorage.setItem(EXPANDED_STORAGE_KEY, value ? '1' : '0');
-  } catch {
-    // Ignore quota/privacy-mode errors — remembering this is a nicety, not a requirement.
-  }
-});
-
-function readExpanded(): boolean {
-  try {
-    return localStorage.getItem(EXPANDED_STORAGE_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
+const showAdvanced = ref(false);
 
 const inputClass =
   'bg-white border border-slate-200 rounded-xl px-4 py-2 text-xs font-bold text-slate-700 outline-none focus:border-indigo-500/50 transition-all';
