@@ -213,7 +213,7 @@ function rarityBg(rarityCode: string): string {
     case 'L':
       return '#FECD1B40';
     default:
-      return '#F1F5F9'; // slate-100
+      return 'rgb(var(--c-slate-100))'; // slate-100, theme-aware
   }
 }
 

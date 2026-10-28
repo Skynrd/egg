@@ -1,9 +1,19 @@
 <template>
-  <the-nav-bar active-entry-id="ascension-planner" />
+  <the-nav-bar active-entry-id="ascension-planner">
+    <button
+      type="button"
+      class="block ml-auto text-gray-300 hover:text-white focus:outline-none focus:ring-1 focus:ring-inset focus:ring-gray-300"
+      :aria-label="isDark ? 'Switch to light mode' : 'Switch to dark mode'"
+      @click="toggleTheme"
+    >
+      <SunIcon v-if="isDark" v-tippy="{ content: 'Light mode', touch: false }" class="h-5 w-5" aria-hidden="true" />
+      <MoonIcon v-else v-tippy="{ content: 'Dark mode', touch: false }" class="h-5 w-5" aria-hidden="true" />
+    </button>
+  </the-nav-bar>
 
   <div
     :class="[
-      'min-h-screen bg-gray-100 transition-all duration-300',
+      'min-h-screen bg-gray-100 dark:bg-[#0b1120] transition-all duration-300',
       plannerTab === 'automatic' || isFooterCollapsed ? 'pb-8' : 'pb-24',
     ]"
   >
@@ -515,6 +525,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
 import { storeToRefs } from 'pinia';
+import { SunIcon, MoonIcon } from '@heroicons/vue/solid';
 import TheNavBar from 'ui/components/NavBar.vue';
 import { getSavedPlayerID, savePlayerID, requestFirstContact, resolveColleggtibleContracts } from 'lib';
 import ThePlayerIdForm from 'ui/components/PlayerIdForm.vue';
@@ -547,6 +558,7 @@ import { hashID, saveMetadata, loadMetadata } from '@/lib/storage/db';
 import { useActionExecutor } from '@/composables/useActionExecutor';
 import { usePersistence } from '@/composables/usePersistence';
 import { compactActionHistory } from '@/composables/useCompactActionHistory';
+import { isDark, toggleTheme } from '@/composables/useTheme';
 import { generateActionId } from '@/types';
 import { computeDependencies } from '@/lib/actions/executor';
 import { restoreFromSnapshot } from '@/lib/actions/snapshot';
@@ -1139,6 +1151,10 @@ const ChevronIcon = {
   background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
+}
+:root.dark .text-gradient {
+  background: linear-gradient(135deg, #f1f5f9 0%, #cbd5e1 100%);
+  -webkit-background-clip: text;
 }
 .section-premium {
   @apply bg-white rounded-3xl border border-slate-100 shadow-sm hover:shadow-xl hover:shadow-slate-200/50 transition-all duration-500;

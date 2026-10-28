@@ -180,12 +180,12 @@ function getArtifactColorClass(artifact: ArtifactOption): string {
  */
 function getSlotBackgroundStyle(artifactId: string | null): Record<string, string> {
   if (!artifactId) {
-    return { backgroundColor: 'white' };
+    return { backgroundColor: 'rgb(var(--c-white))' };
   }
 
   const artifact = getArtifact(artifactId);
   if (!artifact) {
-    return { backgroundColor: 'white' };
+    return { backgroundColor: 'rgb(var(--c-white))' };
   }
 
   // rarity: 0=Common, 1=Rare, 2=Epic, 3=Legendary
@@ -197,7 +197,7 @@ function getSlotBackgroundStyle(artifactId: string | null): Record<string, strin
     case 3: // Legendary
       return { backgroundColor: '#FECD1B40' }; // Slightly higher for yellow visibility
     default: // Common
-      return { backgroundColor: 'white' };
+      return { backgroundColor: 'rgb(var(--c-white))' };
   }
 }
 </script>
@@ -212,18 +212,18 @@ function getSlotBackgroundStyle(artifactId: string | null): Record<string, strin
 }
 
 :deep(.stone-select-compact:not(.is-empty) .Select__input) {
-  background-color: rgba(255, 255, 255, 0.5);
+  background-color: rgb(var(--c-white) / 0.5);
 }
 
 :deep(.stone-select-compact.is-empty .Select__input) {
   background-color: transparent;
   border-style: dashed;
-  border-color: #cbd5e1; /* gray-300 */
+  border-color: rgb(var(--c-gray-300)); /* gray-300 */
 }
 
 :deep(.stone-select-compact .Select__input:hover) {
-  border-color: #94a3b8; /* gray-400 */
-  background-color: rgba(255, 255, 255, 0.8);
+  border-color: rgb(var(--c-gray-400)); /* gray-400 */
+  background-color: rgb(var(--c-white) / 0.8);
 }
 
 /* Move clear (X) icon to the right */

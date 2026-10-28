@@ -43,3 +43,10 @@ export type ChartOption = ComposeOption<
 
 export { echarts };
 export type { ECharts } from 'echarts/core';
+
+/** Axis/grid/marker colors shared by the comparison charts, per theme. */
+export function chartPalette(dark: boolean) {
+  return dark
+    ? { axis: '#64748b', grid: '#334155', name: '#cbd5e1', ink: '#f1f5f9', markerBorder: '#1e293b' }
+    : { axis: '#c3c2b7', grid: '#e1e0d9', name: '#52514e', ink: '#0b0b0b', markerBorder: '#fff' };
+}

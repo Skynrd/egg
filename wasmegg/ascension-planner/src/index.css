@@ -9,3 +9,13 @@
 .app-loading {
   display: none;
 }
+
+/* @tailwindcss/forms hard-codes a white field background. Same specificity as its selectors (the
+   :where() adds none), so bg-* utilities on a given input still win. */
+@layer base {
+  :where(.dark) :is([type='text'], input:where(:not([type])), [type='email'], [type='url'], [type='password'],
+    [type='number'], [type='date'], [type='datetime-local'], [type='month'], [type='search'], [type='tel'],
+    [type='time'], [type='week'], [multiple], textarea, select, [type='checkbox'], [type='radio']) {
+    background-color: rgb(var(--c-white));
+  }
+}

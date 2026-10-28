@@ -21,7 +21,8 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import EChart from '@/components/charts/EChart.vue';
-import type { ChartOption } from '@/lib/charts/echarts';
+import { isDark } from '@/composables/useTheme';
+import { chartPalette, type ChartOption } from '@/lib/charts/echarts';
 import type { VariantKey, VariantResult } from '@/stores/autoPlanner';
 import { useVirtueStore } from '@/stores/virtue';
 import { formatAbsoluteTime, formatNumber } from '@/lib/format';
@@ -111,6 +112,7 @@ const series = computed<BuiltSeries[]>(() => {
 
 const option = computed<ChartOption>(() => {
   const tz = virtueStore.ascensionTimezone;
+  const palette = chartPalette(isDark.value);
 
   // echarts' time axis can only compute its own "nice" day/week tick boundaries in the browser's
   // local zone or UTC — never an arbitrary IANA zone — so every x-value below is pre-shifted by
@@ -141,18 +143,18 @@ const option = computed<ChartOption>(() => {
     xAxis: {
       type: 'time',
       axisLabel: { formatter: (value: number) => formatChartTickDate(value, 'UTC'), fontSize: 9, hideOverlap: true },
-      axisLine: { lineStyle: { color: '#c3c2b7' } },
-      splitLine: { lineStyle: { color: '#e1e0d9' } },
+      axisLine: { lineStyle: { color: palette.axis } },
+      splitLine: { lineStyle: { color: palette.grid } },
     },
     yAxis: {
       type: 'value',
       name: 'Earnings rate ($/hr)',
       nameLocation: 'middle',
       nameGap: 44,
-      nameTextStyle: { fontSize: 9, color: '#52514e' },
+      nameTextStyle: { fontSize: 9, color: palette.name },
       axisLabel: { formatter: (v: number) => formatNumber(v, 1), fontSize: 9 },
-      axisLine: { show: true, lineStyle: { color: '#c3c2b7' } },
-      splitLine: { lineStyle: { color: '#e1e0d9' } },
+      axisLine: { show: true, lineStyle: { color: palette.axis } },
+      splitLine: { lineStyle: { color: palette.grid } },
     },
     dataZoom: [
       { type: 'inside', xAxisIndex: 0 },
@@ -168,7 +170,7 @@ const option = computed<ChartOption>(() => {
       data: s.data.map(([time, value]) => [shift(time), value]),
       markPoint: {
         symbolSize: 10,
-        itemStyle: { color: s.color, borderColor: '#fff', borderWidth: 1.5 },
+        itemStyle: { color: s.color, borderColor: palette.markerBorder, borderWidth: 1.5 },
         label: { show: false },
         data: s.markData.map(m => ({ ...m, coord: [shift(m.coord[0]), m.coord[1]] })),
       },

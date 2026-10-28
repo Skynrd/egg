@@ -16,7 +16,7 @@
       <span class="flex items-center gap-1"><span class="text-slate-700">◆</span> TE earned</span>
       <span class="flex items-center gap-1"><span class="text-slate-700">✦</span> Variants cross</span>
       <span v-if="targetTECrossing" class="flex items-center gap-1">
-        <span class="inline-block w-0.5 h-3 bg-slate-900" /> Target TE reached ({{
+        <span class="inline-block w-0.5 h-3 bg-slate-900 dark:bg-[#f1f5f9]" /> Target TE reached ({{
           variantLabel(targetTECrossing.variant)
         }})
       </span>
@@ -40,7 +40,8 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import EChart from '@/components/charts/EChart.vue';
-import type { ChartOption } from '@/lib/charts/echarts';
+import { isDark } from '@/composables/useTheme';
+import { chartPalette, type ChartOption } from '@/lib/charts/echarts';
 import type { VariantKey, VariantResult } from '@/stores/autoPlanner';
 import { VIRTUE_EGG_NAMES } from '@/types/actions/virtue';
 import { useVirtueStore } from '@/stores/virtue';
@@ -120,6 +121,7 @@ const neverCrossing = computed(() =>
 
 const option = computed<ChartOption>(() => {
   const tz = virtueStore.ascensionTimezone;
+  const palette = chartPalette(isDark.value);
   const horizonMs = horizon.value;
 
   // echarts' time axis can only compute its own "nice" day/week tick boundaries in the browser's
@@ -185,7 +187,7 @@ const option = computed<ChartOption>(() => {
     markPoint: {
       symbol: 'path://M12 0 L15 9 L24 9 L17 14 L19 23 L12 18 L5 23 L7 14 L0 9 L9 9 Z',
       symbolSize: 14,
-      itemStyle: { color: '#0b0b0b', borderColor: '#fff', borderWidth: 1 },
+      itemStyle: { color: palette.ink, borderColor: palette.markerBorder, borderWidth: 1 },
       label: { show: false },
       data: crossingResult.value.crossings.map(c => ({
         coord: [shift(c.time), c.eggs],
@@ -203,9 +205,9 @@ const option = computed<ChartOption>(() => {
             position: 'insideEndTop' as const,
             fontSize: 9,
             fontWeight: 'bold' as const,
-            color: '#0b0b0b',
+            color: palette.ink,
           },
-          lineStyle: { color: '#0b0b0b', width: 1.5 },
+          lineStyle: { color: palette.ink, width: 1.5 },
           data: [
             {
               xAxis: shift(crossing.time),
@@ -255,15 +257,15 @@ const option = computed<ChartOption>(() => {
       min: shift(Math.min(...rays.value.map(r => r.anchorTime)) * 1000),
       max: shift(horizonMs),
       axisLabel: { formatter: (value: number) => formatChartTickDate(value, 'UTC'), fontSize: 9, hideOverlap: true },
-      axisLine: { lineStyle: { color: '#c3c2b7' } },
-      splitLine: { lineStyle: { color: '#e1e0d9' } },
+      axisLine: { lineStyle: { color: palette.axis } },
+      splitLine: { lineStyle: { color: palette.grid } },
     },
     yAxis: {
       type: 'value',
       name: 'Total eggs delivered',
       nameLocation: 'middle',
       nameGap: 54,
-      nameTextStyle: { fontSize: 9, color: '#52514e' },
+      nameTextStyle: { fontSize: 9, color: palette.name },
       // Every ray is monotonically increasing from its own anchor point, so the lowest value any
       // series ever plots is the smallest `anchorEggs` across variants — start the axis a little
       // below that (rather than echarts' default 0 baseline) so differences between lines near the
@@ -271,8 +273,8 @@ const option = computed<ChartOption>(() => {
       // 0-to-lowest-anchor gap.
       min: Math.min(...rays.value.map(r => r.anchorEggs)) * (1 - Y_AXIS_MIN_PADDING),
       axisLabel: { formatter: (v: number) => formatNumber(v, 1), fontSize: 9 },
-      axisLine: { show: true, lineStyle: { color: '#c3c2b7' } },
-      splitLine: { lineStyle: { color: '#e1e0d9' } },
+      axisLine: { show: true, lineStyle: { color: palette.axis } },
+      splitLine: { lineStyle: { color: palette.grid } },
     },
     dataZoom: [
       { type: 'inside', xAxisIndex: 0 },
